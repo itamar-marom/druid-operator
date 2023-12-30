@@ -14,6 +14,7 @@ import (
 
 	autoscalev2 "k8s.io/api/autoscaling/v2"
 	networkingv1 "k8s.io/api/networking/v1"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/datainfrahq/druid-operator/apis/druid/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -72,7 +73,7 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 		return err
 	}
 
-	if err = createOrUpdateDruidResource(ctx, sdk, commonConfig, m, configMapNames); err != nil {
+	if _, err = createOrUpdateDruidResource(ctx, sdk, commonConfig, m, configMapNames); err != nil {
 		return err
 	}
 
@@ -128,10 +129,7 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 			return err
 		}
 
-		if _, err := sdkCreateOrUpdateAsNeeded(ctx, sdk,
-			func() (object, error) { return nodeConfig, nil },
-			func() object { return &v1.ConfigMap{} },
-			alwaysTrueIsEqualsFn, noopUpdaterFn, m, configMapNames, emitEvents); err != nil {
+		if _, err = createOrUpdateDruidResource(ctx, sdk, nodeConfig, m, configMapNames); err != nil {
 			return err
 		}
 
@@ -139,11 +137,11 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 		firstServiceName := ""
 		services := firstNonNilValue(nodeSpec.Services, m.Spec.Services).([]v1.Service)
 		for _, svc := range services {
-			if _, err := sdkCreateOrUpdateAsNeeded(ctx, sdk,
-				func() (object, error) { return makeService(&svc, &nodeSpec, m, lm, nodeSpecUniqueStr) },
-				func() object { return &v1.Service{} }, alwaysTrueIsEqualsFn,
-				func(prev, curr object) { (curr.(*v1.Service)).Spec.ClusterIP = (prev.(*v1.Service)).Spec.ClusterIP },
-				m, serviceNames, emitEvents); err != nil {
+			serviceObj, err := makeService(&svc, &nodeSpec, m, lm, nodeSpecUniqueStr)
+			if err != nil {
+				return err
+			}
+			if _, err = createOrUpdateDruidResource(ctx, sdk, serviceObj, m, serviceNames); err != nil {
 				return err
 			}
 			if firstServiceName == "" {
@@ -154,16 +152,17 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 		nodeSpec.Ports = append(nodeSpec.Ports, v1.ContainerPort{ContainerPort: nodeSpec.DruidPort, Name: "druid-port"})
 
 		if nodeSpec.Kind == "Deployment" {
-			if deployCreateUpdateStatus, err := sdkCreateOrUpdateAsNeeded(ctx, sdk,
-				func() (object, error) {
-					return makeDeployment(&nodeSpec, m, lm, nodeSpecUniqueStr, fmt.Sprintf("%s-%s", commonConfigSHA, nodeConfigSHA), firstServiceName)
-				},
-				func() object { return &appsv1.Deployment{} },
-				deploymentIsEquals, noopUpdaterFn, m, deploymentNames, emitEvents); err != nil {
+			workloadObj, err := makeDeployment(&nodeSpec, m, lm, nodeSpecUniqueStr, fmt.Sprintf("%s-%s", commonConfigSHA, nodeConfigSHA), firstServiceName)
+			if err != nil {
 				return err
-			} else if m.Spec.RollingDeploy {
+			}
+			operationResult, err := createOrUpdateDruidResource(ctx, sdk, workloadObj, m, deploymentNames)
+			if err != nil {
+				return err
+			}
 
-				if deployCreateUpdateStatus == resourceUpdated {
+			if m.Spec.RollingDeploy {
+				if operationResult == controllerutil.OperationResultUpdated {
 					return nil
 				}
 
@@ -178,7 +177,9 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 					}
 				}
 			}
-		} else {
+		}
+
+		if nodeSpec.Kind == "StatefulSet" {
 
 			//	scalePVCForSTS to be called only if volumeExpansion is supported by the storage class.
 			//  Ignore for the first iteration ie cluster creation, else get sts shall unnecessary log errors.
@@ -189,18 +190,17 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 				}
 			}
 
-			// Create/Update StatefulSet
-			if stsCreateUpdateStatus, err := sdkCreateOrUpdateAsNeeded(ctx, sdk,
-				func() (object, error) {
-					return makeStatefulSet(&nodeSpec, m, lm, nodeSpecUniqueStr, fmt.Sprintf("%s-%s", commonConfigSHA, nodeConfigSHA), firstServiceName)
-				},
-				func() object { return &appsv1.StatefulSet{} },
-				statefulSetIsEquals, noopUpdaterFn, m, statefulSetNames, emitEvents); err != nil {
+			workloadObj, err := makeStatefulSet(&nodeSpec, m, lm, nodeSpecUniqueStr, fmt.Sprintf("%s-%s", commonConfigSHA, nodeConfigSHA), firstServiceName)
+			if err != nil {
 				return err
-			} else if m.Spec.RollingDeploy {
+			}
+			operationResult, err := createOrUpdateDruidResource(ctx, sdk, workloadObj, m, deploymentNames)
+			if err != nil {
+				return err
+			}
 
-				if stsCreateUpdateStatus == resourceUpdated {
-					// we just updated, give sts controller some time to update status of replicas after update
+			if m.Spec.RollingDeploy {
+				if operationResult == controllerutil.OperationResultUpdated {
 					return nil
 				}
 

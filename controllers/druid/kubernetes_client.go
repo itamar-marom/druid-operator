@@ -11,8 +11,8 @@ import (
 )
 
 func createOrUpdateDruidResource(ctx context.Context, client client.Client, obj client.Object, druid *v1alpha1.Druid,
-	objState map[string]bool) error {
-	_, err := controllerutil.CreateOrUpdate(ctx, client, obj, func() error {
+	objState map[string]bool) (controllerutil.OperationResult, error) {
+	result, err := controllerutil.CreateOrUpdate(ctx, client, obj, func() error {
 		t := obj.GetCreationTimestamp()
 		if (&t).IsZero() {
 			addOwnerRefToObject(obj, asOwner(druid))
@@ -24,10 +24,10 @@ func createOrUpdateDruidResource(ctx context.Context, client client.Client, obj 
 		return nil
 	})
 	if err != nil {
-		return err
+		return result, err
 	}
 	objState[obj.GetName()] = true
-	return nil
+	return result, nil
 }
 
 func sdkCreateOrUpdateAsNeeded(

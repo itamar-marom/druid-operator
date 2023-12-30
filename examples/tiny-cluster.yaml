@@ -271,7 +271,7 @@ spec:
   nodes:
     brokers:
       # Optionally specify for running broker as Deployment
-      # kind: Deployment
+      kind: Deployment
       nodeType: "broker"
       # Optionally specify for broker nodes
       # imagePullSecrets:
