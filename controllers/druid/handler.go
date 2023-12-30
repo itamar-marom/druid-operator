@@ -19,7 +19,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -73,10 +72,7 @@ func deployDruidCluster(ctx context.Context, sdk client.Client, m *v1alpha1.Drui
 		return err
 	}
 
-	if _, err := sdkCreateOrUpdateAsNeeded(ctx, sdk,
-		func() (object, error) { return makeCommonConfigMap(ctx, sdk, m, ls) },
-		func() object { return &v1.ConfigMap{} },
-		alwaysTrueIsEqualsFn, noopUpdaterFn, m, configMapNames, emitEvents); err != nil {
+	if err = createOrUpdateDruidResource(ctx, sdk, commonConfig, m, configMapNames); err != nil {
 		return err
 	}
 
@@ -725,60 +721,6 @@ func alwaysTrueIsEqualsFn(prev, curr object) bool {
 
 func noopUpdaterFn(prev, curr object) {
 	// do nothing
-}
-
-func sdkCreateOrUpdateAsNeeded(
-	ctx context.Context,
-	sdk client.Client,
-	objFn func() (object, error),
-	emptyObjFn func() object,
-	isEqualFn func(prev, curr object) bool,
-	updaterFn func(prev, curr object),
-	drd *v1alpha1.Druid,
-	names map[string]bool,
-	emitEvent EventEmitter) (DruidNodeStatus, error) {
-
-	if obj, err := objFn(); err != nil {
-		return "", err
-	} else {
-		names[obj.GetName()] = true
-
-		addOwnerRefToObject(obj, asOwner(drd))
-		addHashToObject(obj)
-
-		prevObj := emptyObjFn()
-		if err := sdk.Get(ctx, *namespacedName(obj.GetName(), obj.GetNamespace()), prevObj); err != nil {
-			if apierrors.IsNotFound(err) {
-				// resource does not exist, create it.
-				create, err := writers.Create(ctx, sdk, drd, obj, emitEvent)
-				if err != nil {
-					return "", err
-				} else {
-					return create, nil
-				}
-			} else {
-				e := fmt.Errorf("Failed to get [%s:%s] due to [%s].", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), err.Error())
-				logger.Error(e, e.Error(), "Prev object", stringifyForLogging(prevObj, drd), "name", drd.Name, "namespace", drd.Namespace)
-				emitEvent.EmitEventGeneric(drd, string(druidOjectGetFail), "", err)
-				return "", e
-			}
-		} else {
-			// resource already exists, updated it if needed
-			if obj.GetAnnotations()[druidOpResourceHash] != prevObj.GetAnnotations()[druidOpResourceHash] || !isEqualFn(prevObj, obj) {
-
-				obj.SetResourceVersion(prevObj.GetResourceVersion())
-				updaterFn(prevObj, obj)
-				update, err := writers.Update(ctx, sdk, drd, obj, emitEvent)
-				if err != nil {
-					return "", err
-				} else {
-					return update, err
-				}
-			} else {
-				return "", nil
-			}
-		}
-	}
 }
 
 func isObjFullyDeployed(ctx context.Context, sdk client.Client, nodeSpec v1alpha1.DruidNodeSpec, nodeSpecUniqueStr string, drd *v1alpha1.Druid, emptyObjFn func() object, emitEvent EventEmitter) (bool, error) {
